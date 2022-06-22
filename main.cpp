@@ -1,4 +1,3 @@
-// implement hnswlib
 #include <iostream>
 #include <utility>
 #include <vector>
@@ -29,7 +28,7 @@ public:
 class HNSW {
 private:
     std::vector<std::vector<int> > data;
-    std::vector<std::vector<Node *> > graph;
+    Node *enter_point = nullptr;
 
     // hyper parameters
     int m = 10;                                      // number of neighbors to connect in algo1
@@ -61,15 +60,6 @@ public:
         distance_calculation_count = set_count;
     }
 
-
-    static void print_vector(const std::vector<int> &v) {
-        int sum = 0;
-        for (auto k: v) {
-            sum += k;
-        }
-        std::cout << sum << " ";
-    }
-
     void print_graph_parameters() {
         std::cout << "m=" << m << ", m_max=" << m_max << ", m_max_0=" << m_max_0 << ", ef_construction="
                   << ef_construction << ", ml=" << ml << ", select_neighbor=" << select_neighbors_mode << std::endl;
@@ -99,21 +89,6 @@ public:
         }
     }
 
-    void print_graph_layer(int level) const {
-        for (size_t i = level; i < graph.size(); i++) {
-            std::cout << "level " << i << ": " << graph[i].size() << std::endl;
-            for (size_t j = 0; j < graph[i].size(); j++) {
-                print_vector(graph[i][j]->data);
-                std::cout << "neighbors: ";
-                for (auto n: (graph[i][j]->neighbors)[i]) {
-                    print_vector(n->data);
-                }
-                std::cout << std::endl;
-            }
-            std::cout << std::endl;
-        }
-    }
-
     void build_graph(const std::vector<std::vector<int> > &input) {
         data = input;
         std::cout << "building graph" << std::endl;
@@ -123,30 +98,22 @@ public:
             Node *node = new Node(input[i], std::vector<std::vector<Node *> >(), 0);
 
             // special case: the first node has no enter point to insert
-            if (graph.empty()) {
+            if (enter_point == nullptr) {
+                enter_point = node;
                 node->neighbors.resize(1);
-                graph.resize(1);
-                graph[0].push_back(node);
                 continue;
             }
 
             insert(node, m, m_max, m_max_0, ef_construction, ml);
 
-            // add new node to specific layer of graph
-            while (graph.size() <= node->level) {
-                graph.emplace_back();
-            }
-            for (int l = 0; l <= node->level; l++) {
-                graph[l].push_back(node);
-            }
             log_progress(i + 1, input.size());
         }
     }
 
     void insert(Node *q, int m, int m_max, int m_max_0, int ef_construction, float ml) {
         std::priority_queue<std::pair<float, Node *> > w;
-        Node *ep = graph[graph.size() - 1][0];
-        int l = graph.size() - 1;
+        Node *ep = this->enter_point;
+        int l = ep->level;
         int l_new = floor(-log((float) rand() / (RAND_MAX + 1.0)) * ml);
 
         // update fields of node
@@ -199,16 +166,19 @@ public:
             }
             ep = w.top().second;
         }
+        if (l_new > l) {
+            this->enter_point = q;
+        }
     }
 
     std::priority_queue<std::pair<float, Node *> > search_layer(Node *q, Node *ep, int ef, int lc) {
-        std::pair<float, Node *> p1{-dist_l2(&(ep->data), &(q->data)), ep};
-        std::pair<float, Node *> p2{dist_l2(&(ep->data), &(q->data)), ep};
+        float d = dist_l2(&(ep->data), &(q->data));
         std::unordered_set<Node *> v{ep};                          // set of visited elements
         std::priority_queue<std::pair<float, Node *> > candidates; // set of candidates
         std::priority_queue<std::pair<float, Node *> > w;          // dynamic list of found nearest neighbors
-        candidates.push(p1);
-        w.push(p2);
+        candidates.emplace(-d, ep);
+        w.emplace(d, ep);
+
         while (!candidates.empty()) {
             Node *c = candidates.top().second; // extract nearest element from c to q
             float c_dist = candidates.top().first;
@@ -327,7 +297,7 @@ public:
 
     std::vector<std::vector<int> > knn_search(Node *q, int k, int ef) {
         std::priority_queue<std::pair<float, Node *> > w; // set for the current nearest elements
-        Node *ep = graph[graph.size() - 1][0];            // get enter point for hnsw
+        Node *ep = this->enter_point;                     // get enter point for hnsw
         int l = ep->level;                                // top level for hnsw
         for (int lc = l; lc > 0; lc--) {
             w = search_layer(q, ep, 1, lc);
@@ -349,7 +319,7 @@ public:
 
     std::vector<std::vector<int> > knn_search_brute_force(const std::vector<int> &q, int k) {
         std::priority_queue<std::pair<float, std::vector<int> > > heap;
-        for (auto &i: data) {
+        for (const auto &i: data) {
             float dist = dist_l2(&i, &q);
             heap.emplace(dist, i);
             if (heap.size() > k) {
@@ -429,12 +399,12 @@ int main(int argc, char **argv) {
     std::vector<std::vector<int> > base_load;
     std::vector<std::vector<int> > query_load;
     unsigned dim, num;
-    load_fvecs_data("./sift/sift_base.fvecs", base_load, num, dim);
+    load_fvecs_data("./siftsmall/siftsmall_base.fvecs", base_load, num, dim);
 
     std::cout << "result_num：" << num << std::endl
               << "result dimension：" << dim << std::endl;
 
-    load_fvecs_data("./sift/sift_query.fvecs", query_load, num, dim);
+    load_fvecs_data("./siftsmall/siftsmall_query.fvecs", query_load, num, dim);
     std::cout << "query_num：" << num << std::endl
               << "query dimension：" << dim << std::endl;
 
