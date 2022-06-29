@@ -38,7 +38,7 @@ private:
     int m_max_0 = 20;                             // limit maximum number of neighbors at layer0 in algo1
     int ef_construction = 40;                     // size of dynamic candidate list
     float ml = 1.0;                               // normalization factor for level generation
-    int distance_calculation_count = 0;           // count number of calling distance function
+    size_t distance_calculation_count = 0;        // count number of calling distance function
     std::string select_neighbors_mode = "simple"; // select which select neighbor algorithm to use
 
     float dist_l2(const std::vector<int> *v1, const std::vector<int> *v2) {
@@ -55,6 +55,7 @@ private:
 
 public:
     HNSW(int m, int m_max, int m_max_0, int ef_construction, float ml, std::string select_neighbors_mode) {
+        srand(42);
         this->m = m;
         this->m_max = m_max;
         this->m_max_0 = m_max_0;
@@ -253,7 +254,7 @@ public:
         priority_queue<std::pair<float, Node *> > tempC2 = c;
         while (!tempC1.empty()) {
             w_set.emplace(tempC1.top().second);
-            tempC2.pop();
+            tempC1.pop();
         }
 
         if (extend_candidates) {
@@ -522,8 +523,10 @@ build_graph_and_query(const std::vector<std::vector<int> > &base_load, const std
 
     // write to csv file
     std::fstream file(file_name, std::ios_base::app);
-    file << m << ", " << m_max  << ", " << m_max_0 << ", " << ef_construction << ", " << ml << ", " << select_neighbors_mode << ", "
-         << build_time << ", "<< query_time << ", " << build_count << ", " << query_count << ", " << avg_recall << "\n";
+    file << m << ", " << m_max << ", " << m_max_0 << ", " << ef_construction << ", " << ml << ", "
+         << select_neighbors_mode << ", "
+         << build_time << ", " << query_time << ", " << build_count << ", " << query_count << ", " << avg_recall
+         << "\n";
     file.close();
 }
 
@@ -533,39 +536,38 @@ int main(int argc, char **argv) {
     std::vector<std::vector<int> > base_load;
     std::vector<std::vector<int> > query_load;
     std::vector<std::vector<int> > ground_truth_load;
-    unsigned dim, num;
     unsigned dim1, num1;
-    load_fvecs_data("siftsmall/siftsmall_base.fvecs", base_load, num, dim);
-    load_fvecs_data("siftsmall/siftsmall_query.fvecs", query_load, num, dim);
-    load_ivecs_data("siftsmall/siftsmall_groundtruth.ivecs", ground_truth_load, num1, dim1);
-
-    std::cout << "base_num：" << num << std::endl
-              << "base dimension：" << dim << std::endl;
-
-    std::cout << "query_num：" << num << std::endl
-              << "query dimension：" << dim << std::endl;
+    unsigned dim2, num2;
+    unsigned dim3, num3;
+    load_fvecs_data("siftsmall/siftsmall_base.fvecs", base_load, num1, dim1);
+    load_fvecs_data("siftsmall/siftsmall_query.fvecs", query_load, num2, dim2);
+    load_ivecs_data("siftsmall/siftsmall_groundtruth.ivecs", ground_truth_load, num3, dim3);
+    std::cout << "base_num：" << num1 << std::endl
+              << "base dimension：" << dim1 << std::endl;
+    std::cout << "query_num：" << num2 << std::endl
+              << "query dimension：" << dim2 << std::endl;
 
     // prepare csv file to write
-    std::string file_name = "result_k=100_ef=100.csv";
-    std::fstream output_file(file_name);
+    std::string file_name = "testt.csv";
+    std::fstream output_file(file_name, std::ios_base::out);
     output_file << "m, m_max, m_max_0, ef_construction, ml, select_neighbor_mode, "
                 << "total_time_for_building_graph, total_time_for_query, total_distance_count_for_building_graph, total_distance_count_for_query, "
                 << "recall\n";
     output_file.close();
 
-    for (std::string select_neighbors_mode: {"simple", "heuristic"}) {
-        for (int m = 1; m < 80; m++) {
-            for (int m_max = 1; m_max < 80; m_max++) {
-                for (int m_max_0 = 1; m_max_0 < 80; m_max_0++) {
-                    for (int ef_construction = 1; ef_construction < 80; ef_construction++) {
-                        std::cout << 1 / log(m) << std::endl;
-                        build_graph_and_query(base_load, query_load, ground_truth_load, file_name, m, m_max, m_max_0,
-                                              ef_construction, 1 / log(m), select_neighbors_mode);
-                    }
-                }
-            }
-        }
-    }
+    // for (std::string select_neighbors_mode: {"heuristic"}) {
+    //     for (int m = 20; m < 25; m+=5) {
+    //         for (int m_max = 40; m_max < 50; m_max+=5) {
+    //             for (int m_max_0 = 10; m_max_0 < 50; m_max_0+=5) {
+    //                 for (int ef_construction = 20; ef_construction < 100; ef_construction+=5) {
+    //                     build_graph_and_query(base_load, query_load, ground_truth_load, file_name, m, m_max, m_max_0,
+    //                                         ef_construction, 1.0, select_neighbors_mode);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+    build_graph_and_query(base_load, query_load, ground_truth_load, file_name, 50, 50, 50, 100, 1.0, "heuristic");
 
     return 0;
 }
