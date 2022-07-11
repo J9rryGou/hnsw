@@ -1,4 +1,4 @@
-m, m_max, m_max_0, ef_construction, ml, select_neighbor_mode, total_time_for_building_graph, total_time_for_query, total_distance_count_for_building_graph, total_distance_count_for_query, recall
+m, m_max,m_max_0,ef_construction,ml,select_neighbor_mode,total_time_for_building_graph,total_time_for_query,total_distance_count_for_building_graph,total_distance_count_for_query,recall,connectiveness
 5, 5, 5, 10, 1, simple, 31466, 9, 118325915, 45724, 0.227, 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 
 5, 5, 10, 10, 1, simple, 31351, 15, 118903393, 84222, 0.5136, 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 
 5, 5, 15, 10, 1, simple, 33747, 20, 119161327, 113480, 0.5901, 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 1.000000 
