@@ -60,24 +60,18 @@ class Node {
 public:
     std::vector<float> data;
     std::vector<std::vector<Node *> > neighbors;
-    int level;
     Node *parent;
     std::vector<int> next;
 
-    Node(const std::vector<float> &d, const std::vector<std::vector<Node *> > &n, int l) {
+    Node(const std::vector<float> &d, const std::vector<std::vector<Node *> > &n) {
         this->data = d;
         this->neighbors = n;
-        this->level = l;
         this->parent = nullptr;
     }
 };
 
 class HNSW {
 private:
-    // graph
-    std::vector<std::vector<float> > data;
-    Node *enter_point = nullptr;
-
     // hyper parameters
     int m;                                   // number of neighbors to connect in algo1
     int m_max;                               // limit maximum number of neighbors in algo1
@@ -103,26 +97,8 @@ private:
     }
 
 public:
-    map<std::vector<float> , Node*> umap;
-    std::vector<std::vector<Node *> > graph;
+    Node *enter_point = nullptr;
     std::map<Node *, std::map<Node *, std::map<int, int> > > edge_map;
-
-    std::vector<float> report_neighbor_connection() {
-        std::vector<float> connectiveness;
-        for (int l = 0; l < graph.size(); l++) {
-            float connection_level = 0;
-            for (Node * n : graph[l]) {
-                auto closest_neighbors = this->knn_search_brute_force(n, graph[l], n->neighbors[l].size());
-                std::vector<std::vector<float> > connected_neighbors;
-                for (Node *ne : n->neighbors[l]) {
-                    connected_neighbors.push_back(ne->data);
-                }
-                connection_level += calculate_recall(connected_neighbors, closest_neighbors);
-            }
-            connectiveness.push_back(connection_level / graph[l].size());
-        }
-        return connectiveness;
-    }
 
     HNSW(int m, int m_max, int m_max_0, int ef_construction, float ml, const std::string &select_neighbors_mode) {
         srand(42);
@@ -177,71 +153,38 @@ public:
         }
         std::cout << "] " << int(progress * 100.0);
 
-        if (curr == total) {
+        if (curr >= total) {
             std::cout << std::endl;
         }
     }
 
 
     void build_graph(const std::vector<std::vector<float> > &input) {
-        data = input;
         std::cout << "building graph" << std::endl;
 
         for (int i = 0; i < input.size(); i++) {
-            Node *node = new Node(input[i], std::vector<std::vector<Node *> >(), 0);
-            this->umap[node->data] = node;
+            Node *node = new Node(input[i], std::vector<std::vector<Node *> >());
 
             // special case: the first node has no enter point to insert
             if (enter_point == nullptr) {
                 enter_point = node;
                 node->neighbors.resize(1);
                 node->next.resize(1);
-                graph.resize(1);
-                graph[0].push_back(node);
                 continue;
             }
-
             insert(node, m, m_max, m_max_0, ef_construction, ml);
-
-            // add new node to specific layer of graph
-            while (graph.size() <= node->level) {
-                graph.emplace_back();
-            }
-            for (int l = 0; l <= node->level; l++) {
-                graph[l].push_back(node);
-            }
-
             log_progress(i + 1, input.size());
         }
-
-        // insert the nearest neighbor in all layer
-        // for (int l = 0; l < graph.size(); l++) {
-        //     for (Node *nod: graph[l]) {
-        //         int m_effective = l == 0 ? this->m_max_0 : this->m_max;
-        //         vector<vector<float>> temp = knn_search_brute_force(nod, graph[l], m_effective);
-        //         std::vector<Node *> new_neighbors;
-        //         for (const auto& vec: temp) {
-        //             if (umap[vec]->data.size() == 0) {
-        //                 throw std::runtime_error("vector size is 0");
-        //             }
-        //             new_neighbors.push_back(umap[vec]);
-        //         }
-        //         nod->neighbors[l] = new_neighbors;
-        //     }
-        // }
     }
 
     void insert(Node *q, int m, int m_max, int m_max_0, int ef_construction, float ml) {
         std::priority_queue<std::pair<float, Node *> > w;
         Node *ep = this->enter_point;
-        int l = ep->level;
+        int l = ep->neighbors.size() - 1;
         int l_new = floor(-log((float) rand() / (RAND_MAX + 1.0)) * ml);
 
-        // update fields of node
-        q->level = l_new;
-        while (q->neighbors.size() <= l_new) {
-            q->neighbors.emplace_back();
-        }
+        // update fields of node to level l_new
+        q->neighbors.resize(l_new + 1);
         q->next.resize(l_new + 1);
 
         for (int lc = l; lc > l_new; lc--) {
@@ -343,11 +286,11 @@ public:
         std::priority_queue<std::pair<float, Node *> > w;          // dynamic list of found nearest neighbors
         candidates.emplace(-d, ep);
         w.emplace(d, ep);
+        ep->next[lc] = 0;
 
         while (!candidates.empty()) {
             Node *c = candidates.top().second; // extract nearest element from c to q
             float c_dist = candidates.top().first;
-            //candidates.pop();
             Node *f = w.top().second; // get furthest element from w to q
             float f_dist = w.top().first;
             if (-c_dist > f_dist) {
@@ -355,15 +298,13 @@ public:
             }
 
             if (c->next[lc] >= c->neighbors[lc].size()) {
-                c->next[lc] = 0;
                 candidates.pop();
             } else {
                 Node *e = c->neighbors[lc][c->next[lc]];
                 c->next[lc]++;
                 if (v.find(e) == v.end()) {
                     v.emplace(e);
-                    // record parent
-                    e->parent = c;
+                    e->parent = c; // record parent
                     f = w.top().second;
                     float distance_e_q = dist_l2(&(e->data), &(q->data));
                     float distance_f_q = dist_l2(&(f->data), &(q->data));
@@ -445,11 +386,6 @@ public:
             Node *e = w.top().second;
             float distance_e_q = w.top().first;
             w.pop();
-//            if (r.empty() || distance_e_q < r.top().first) {
-//                r.emplace(distance_e_q, e);
-//            } else {
-//                w_d.emplace(-distance_e_q, e);
-//            }
             bool good = true;
             for (Node * rr : r) {
                 if (dist_l2(&rr->data, &e->data) < distance_e_q){
@@ -470,61 +406,33 @@ public:
             }
         }
 
-        // return r
         return r;
     }
 
 
     std::vector<std::vector<float> > knn_search_new(Node *q, int k, int ef) {
-
         std::priority_queue<std::pair<float, Node *> > w; // set for the current nearest elements
         Node *ep = this->enter_point;                     // get enter point for hnsw
-        int l = ep->level;                                // top level for hnsw
+        int l = ep->neighbors.size() - 1;                 // top level for hnsw
         for (int lc = l; lc > 0; lc--) {
             w = search_layer_new(q, ep, 1, lc);
-            Node *p  = w.top().second;
-            if (p == ep) {
-                this->edge_map[p][p][lc]++;
-            }
-            while (p != ep) {
-                this->edge_map[p->parent][p][lc]++;
-                p = p->parent;
-            }
             ep = w.top().second;
         }
-
-        // std::vector<float> v1 = knn_search_brute_force(q, graph[1], 1)[0];
-        // set a new node to search layer
-        // ep = this->umap[v1];
-
-        // // compare if 2 vectors are identical
-        // if (v1 == ep->data) {
-        //     this->level_one_hit_count++;
-        // }
 
         w = search_layer_new(q, ep, ef, 0);
 
         std::vector<std::vector<float> > result;
         while (!w.empty() && result.size() < k) {
             result.emplace_back(w.top().second->data);
-            Node *p  = w.top().second;
-            if (p == ep) {
-                this->edge_map[p][p][0]++;
-            }
-            while (p != ep) {
-                this->edge_map[p->parent][p][0]++;
-                p = p->parent;
-            }
             w.pop();
         }
         return result; // return K nearest elements from W to q
     }
 
     std::vector<std::vector<float> > knn_search(Node *q, int k, int ef) {
-
         std::priority_queue<std::pair<float, Node *> > w; // set for the current nearest elements
         Node *ep = this->enter_point;                     // get enter point for hnsw
-        int l = ep->level;                                // top level for hnsw
+        int l = ep->neighbors.size() - 1;                 // top level for hnsw
         for (int lc = l; lc > 0; lc--) {
             w = search_layer(q, ep, 1, lc);
             Node *p  = w.top().second;
@@ -537,15 +445,6 @@ public:
             }
             ep = w.top().second;
         }
-
-        // std::vector<float> v1 = knn_search_brute_force(q, graph[1], 1)[0];
-        // set a new node to search layer
-        // ep = this->umap[v1];
-
-        // // compare if 2 vectors are identical
-        // if (v1 == ep->data) {
-        //     this->level_one_hit_count++;
-        // }
 
         w = search_layer(q, ep, ef, 0);
 
@@ -564,7 +463,6 @@ public:
         }
         return result; // return K nearest elements from W to q
     }
-
 
     std::vector<std::vector<float> >
     knn_search_brute_force(const Node *q, const std::vector<Node *> &base_data_nodes, int k) {
@@ -683,9 +581,9 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
                       const std::vector<std::vector<float> > &groundtruth_load,
                       std::string file_name, HNSW &hnsw, int k, int ef_k) {
     // initialize graph
+    hnsw.print_graph_parameters();
     auto start = std::chrono::high_resolution_clock::now();
     hnsw.build_graph(base_load);
-    hnsw.print_graph_parameters();
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = duration_cast<std::chrono::milliseconds>(end - start);
     float build_time = (float) duration.count();
@@ -694,17 +592,22 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     std::cout << "total distance count for building graph: " << build_count << std::endl;
 
     // learn
-    for (const std::vector<float> &v: learn_load) {
-        Node *query_node = new Node(v, std::vector<std::vector<Node *> >(), 0);
+    std::cout << "querying learn vectors..." << std::endl;
+    for (size_t i = 0; i < learn_load.size(); i++) {
+        Node *query_node = new Node(learn_load[i], std::vector<std::vector<Node *>>());
         hnsw.knn_search(query_node, k, ef_k);
         delete query_node;
+        hnsw.log_progress(i + 1, learn_load.size());
     }
 
+
     // base
-    for (const std::vector<float> &v: base_load) {
-        Node *query_node = new Node(v, std::vector<std::vector<Node *> >(), 0);
+    std::cout << "querying base vectors..." << std::endl;
+    for (size_t i = 0; i < base_load.size(); i++) {
+        Node *query_node = new Node(base_load[i], std::vector<std::vector<Node *>>());
         hnsw.knn_search(query_node, k, ef_k);
         delete query_node;
+        hnsw.log_progress(i + 1, base_load.size());
     }
 
     //remove edges in hnsw.edge_map
@@ -719,26 +622,30 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
 //        }
 //    }
 
-     // sort all node neighbors by frequency count in edge_map
-     for (auto &i: hnsw.edge_map) {
-         i.first->next = std::vector<int>(i.first->neighbors.size(), 0);
-         for (int l = 0; l < i.first->neighbors.size(); l++) {
-             std::sort(i.first->neighbors[l].begin(), i.first->neighbors[l].end(),
-                       [&hnsw, &i, l](Node *a, Node *b) {
-                           return hnsw.edge_map[i.first][a][l] > hnsw.edge_map[i.first][b][l];
-                       });
-         }
-     }
+    // sort all node neighbors by frequency count in edge_map
+    std::cout << "sorting neighbors..." << std::endl;
+    for (auto &i: hnsw.edge_map) {
+        i.first->next = std::vector<int>(i.first->neighbors.size(), 0);
+        for (int l = 0; l < i.first->neighbors.size(); l++) {
+            std::sort(i.first->neighbors[l].begin(), i.first->neighbors[l].end(),
+                    [&hnsw, &i, l](Node *a, Node *b) {
+                        return hnsw.edge_map[i.first][a][l] > hnsw.edge_map[i.first][b][l];
+                    });
+        }
+    }
 
     // query
+    std::cout << "querying query vectors..." << std::endl;
     start = std::chrono::high_resolution_clock::now();
     hnsw.set_distance_calculation_count(0);
     std::vector<std::vector<std::vector<float> > > query_result;
-    for (const std::vector<float> &v: query_load) {
-        Node *query_node = new Node(v, std::vector<std::vector<Node *> >(), 0);
+    for (size_t i = 0; i < query_load.size(); i++) {
+        Node *query_node = new Node(query_load[i], std::vector<std::vector<Node *> >());
         query_result.emplace_back(hnsw.knn_search_new(query_node, k, ef_k));
         delete query_node;
+        hnsw.log_progress(i + 1, query_load.size());
     }
+
     end = std::chrono::high_resolution_clock::now();
     duration = duration_cast<std::chrono::milliseconds>(end - start);
     float query_time = (float) duration.count();
@@ -747,29 +654,27 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     std::cout << "total distance count for query: " << query_count << std::endl;
 
     // frequency distribution
-    int non_zero_count = 0;
-    int zero_count = 0;
-    for (int l = 0; l < hnsw.graph.size(); l++) {
-        std::cout << "level " << l << std::endl;
-        int count = 0;
-        for (Node *a : hnsw.graph[l]) {
-            std::cout << "node " << a << ": ";
-            std::cout <<hnsw.edge_map[a][a][l] << " | ";
-            count += hnsw.edge_map[a][a][l];
-            for (Node *b: a->neighbors[l]) {
-                non_zero_count++;
-                if (hnsw.edge_map[a][b][l] == 0) {
-                    zero_count++;
-                }
-                std::cout << hnsw.edge_map[a][b][l] << " ";
-                count += hnsw.edge_map[a][b][l];
-            }
-            std::cout << std::endl;
-        }
-        std::cout << "level " << l << " total count: " << count << std::endl;
-    }
-    std::cout << "non_zero_count: " << non_zero_count << std::endl;
-    std::cout << "zero_count: " << zero_count << std::endl;
+    // std::map<int, int> freq_dist;
+    // for (int l = 0; l < hnsw.enter_point->neighbors.size(); l++) {
+    //     std::cout << "level " << l << std::endl;
+    //     int count = 0;
+    //     for (Node *a : hnsw.edge_map.key_comp) {
+    //         std::cout << "node " << a << ": ";
+    //         std::cout <<hnsw.edge_map[a][a][l] << " | ";
+    //         count += hnsw.edge_map[a][a][l];
+    //         for (Node *b: a->neighbors[l]) {
+    //             freq_dist[hnsw.edge_map[a][b][l]]++;
+    //             std::cout << hnsw.edge_map[a][b][l] << " ";
+    //             count += hnsw.edge_map[a][b][l];
+    //         }
+    //         std::cout << std::endl;
+    //     }
+    //     std::cout << "level " << l << " total count: " << count << std::endl << std::endl;
+    // }
+    // std::cout << "frequency distribution: " << std::endl;
+    // for (const auto &i: freq_dist) {
+    //     std::cout << i.first << ": " << i.second << std::endl;
+    // }
 
     // calculate recall
     std::vector<float> total_recall;
@@ -784,32 +689,22 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     float avg_recall = std::accumulate(total_recall.begin(), total_recall.end(), 0.0) / total_recall.size();
     std::cout << "recall: " << avg_recall << std::endl;
 
-    // level one hit rate
-    float level_one_hit_rate = (float) hnsw.get_level_one_hit_count() / query_load.size();
-    std::cout << "level_one_hit_count: " << level_one_hit_rate << std::endl;
-
-    // report neighbor connection
-    // std::vector<float> connectiveness = hnsw.report_neighbor_connection();
-    std::vector<float> connectiveness;
-    std::string connection_accuracy;
-    for (float f : connectiveness) {
-        connection_accuracy += std::to_string(f) + " ";
-    }
-
     // write to csv file
-    std::fstream file(file_name, std::ios_base::app);
     auto p = hnsw.get_graph_parameters();
     int m, m_max, m_max_0, ef_construction;
     float ml;
     std::string select_neighbors_mode;
     std::tie(m, m_max, m_max_0, ef_construction, ml, select_neighbors_mode) = p;
+    file_name = "./result/hnsw_" + std::to_string(m) + "_" + std::to_string(m_max) + "_" + std::to_string(m_max_0) +
+                "_" + std::to_string(ef_construction) + "_" + std::to_string(ml) + "_" + select_neighbors_mode +
+                "_" + std::to_string(k) + "_" + std::to_string(ef_k) + ".csv";
+    std::fstream file(file_name, std::ios_base::app);
     file << m << "," << m_max << "," << m_max_0 << "," << ef_construction << "," << ml << ","
          << select_neighbors_mode << ","
          << build_time << "," << query_time << "," << build_count << "," << query_count << "," << avg_recall << ","
-         << connection_accuracy << "," << k << "," << ef_k << "," << level_one_hit_rate << "\n";
+         << k << "," << ef_k << "\n";
     file.close();
 }
-
 
 
 int main(int argc, char **argv) {
@@ -819,18 +714,17 @@ int main(int argc, char **argv) {
     std::vector<std::vector<float> > query_load;
     std::vector<std::vector<float> > learn_load;
     std::vector<std::vector<float> > groundtruth_load;
-    unsigned dim1, num1;
-    unsigned dim2, num2;
-    unsigned dim3, num3;
-    unsigned dim4, num4;
-    load_fvecs_data("siftsmall/siftsmall_base.fvecs", base_load, num1, dim1);
-    load_fvecs_data("siftsmall/siftsmall_learn.fvecs", learn_load, num2, dim2);
-    load_fvecs_data("siftsmall/siftsmall_query.fvecs", query_load, num3, dim3);
-    load_ivecs_data("siftsmall/siftsmall_groundtruth.ivecs", groundtruth_load, num4, dim4);
+    unsigned dim1, dim2, dim3, dim4;
+    unsigned num1, num2, num3, num4;
+    // load_fvecs_data("sift/sift_base.fvecs", base_load, num1, dim1);
+    // load_fvecs_data("sift/sift_learn.fvecs", learn_load, num2, dim2);
+    // load_fvecs_data("sift/sift_query.fvecs", query_load, num3, dim3);
+    // load_ivecs_data("sift/sift_groundtruth.ivecs", groundtruth_load, num4, dim4);
 //
-//     load_txt_data("glovesmall/glovesmall.twitter.27B.25d.base.txt", base_load, num1, dim1);
-//     load_txt_data("glovesmall/glovesmall.twitter.27B.25d.query.txt", query_load, num2, dim2);
-//     load_txt_data("glovesmall/glovesmall.twitter.27B.25d.groundtruth.txt", groundtruth_load, num3, dim3);
+    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.base.txt", base_load, num1, dim1);
+    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.query.txt", query_load, num2, dim2);
+    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.learn.txt", learn_load, num3, dim3);
+    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.groundtruth.txt", groundtruth_load, num4, dim4);
 
     std::cout << "base_num：" << num1 << std::endl
               << "base dimension：" << dim1 << std::endl;
@@ -843,10 +737,10 @@ int main(int argc, char **argv) {
 
     // prepare csv file to write
     std::string file_name = "test.csv";
-    std::fstream output_file(file_name, std::ios_base::out);
+    std::fstream output_file(file_name, std::ios_base::app);
     output_file << "m,m_max,m_max_0,ef_construction,ml,select_neighbor_mode,"
                 << "total_time_for_building_graph,total_time_for_query,total_distance_count_for_building_graph,total_distance_count_for_query,"
-                << "recall,k,ef_k,level_one_hit_rate\n";
+                << "recall,k,ef_k\n";
     output_file.close();
 
     // for (std::string select_neighbors_mode: {"simple", "heuristic"}) {
@@ -861,8 +755,8 @@ int main(int argc, char **argv) {
     //         }
     //     }
     // }
-    HNSW hnsw = HNSW(15, 20, 45, 110, 1.0, "simple");
-    build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 99);
+    HNSW hnsw = HNSW(16, 16, 32, 32, 1.0, "simple");
+    build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 5000);
 
     return 0;
 }
