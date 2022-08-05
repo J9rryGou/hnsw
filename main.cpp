@@ -47,9 +47,9 @@ float calculate_recall(const std::vector<std::vector<float> > &sample, const std
 
 float
 calculate_recall(const std::vector<std::vector<float> > &sample, const std::vector<std::vector<float> > &base_load,
-                 const vector<float> &index) {
+                 const vector<float> &index, int k) {
     std::vector<std::vector<float> > base;
-    for (int i = 0; i < index.size(); i++) {
+    for (int i = 0; i < k; i++) {
         base.push_back(base_load[index[i]]);
     }
     return calculate_recall(sample, base);
@@ -260,8 +260,7 @@ public:
                     e->parent = c;
                     f = w.top().second;
                     float distance_e_q = dist_l2(&(e->data), &(q->data));
-                    float distance_f_q = dist_l2(&(f->data), &(q->data));
-                    if (distance_e_q < distance_f_q || w.size() < ef) {
+                    if (distance_e_q < f_dist || w.size() < ef) {
                         candidates.emplace(-distance_e_q, e);
                         w.emplace(distance_e_q, e);
                         if (w.size() > ef) {
@@ -307,8 +306,7 @@ public:
                     e->parent = c; // record parent
                     f = w.top().second;
                     float distance_e_q = dist_l2(&(e->data), &(q->data));
-                    float distance_f_q = dist_l2(&(f->data), &(q->data));
-                    if (distance_e_q < distance_f_q || w.size() < ef) {
+                    if (distance_e_q < f_dist || w.size() < ef) {
                         e->next[lc] = 0;
                         candidates.emplace(-distance_e_q, e);
                         w.emplace(distance_e_q, e);
@@ -429,7 +427,26 @@ public:
         return result; // return K nearest elements from W to q
     }
 
-    std::vector<std::vector<float> > knn_search(Node *q, int k, int ef) {
+    std::vector<std::vector<float> > knn_search_old(Node *q, int k, int ef) {
+        std::priority_queue<std::pair<float, Node *> > w; // set for the current nearest elements
+        Node *ep = this->enter_point;                     // get enter point for hnsw
+        int l = ep->neighbors.size() - 1;                 // top level for hnsw
+        for (int lc = l; lc > 0; lc--) {
+            w = search_layer(q, ep, 1, lc);
+            ep = w.top().second;
+        }
+
+        w = search_layer(q, ep, ef, 0);
+
+        std::vector<std::vector<float> > result;
+        while (!w.empty() && result.size() < k) {
+            result.emplace_back(w.top().second->data);
+            w.pop();
+        }
+        return result; // return K nearest elements from W to q
+    }
+
+    std::vector<std::vector<float> > knn_search_learn(Node *q, int k, int ef) {
         std::priority_queue<std::pair<float, Node *> > w; // set for the current nearest elements
         Node *ep = this->enter_point;                     // get enter point for hnsw
         int l = ep->neighbors.size() - 1;                 // top level for hnsw
@@ -591,21 +608,90 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     std::cout << "total time for building graph: " << build_time / 1000 << std::endl;
     std::cout << "total distance count for building graph: " << build_count << std::endl;
 
-    // learn
-    std::cout << "querying learn vectors..." << std::endl;
-    for (size_t i = 0; i < learn_load.size(); i++) {
-        Node *query_node = new Node(learn_load[i], std::vector<std::vector<Node *>>());
-        hnsw.knn_search(query_node, k, ef_k);
-        delete query_node;
-        hnsw.log_progress(i + 1, learn_load.size());
+    float old_query_time, new_random_query_time, new_query_time;
+    unsigned long long old_query_count, new_random_query_count, new_query_count;
+    float old_avg_recall, new_random_avg_recall, new_avg_recall;
+    // old search layer: query
+    {
+        std::cout << std::endl << "old serach layer: querying query vectors..." << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        hnsw.set_distance_calculation_count(0);
+        std::vector<std::vector<std::vector<float> > > old_query_result;
+        for (size_t i = 0; i < query_load.size(); i++) {
+            Node *query_node = new Node(query_load[i], std::vector<std::vector<Node *> >());
+            old_query_result.emplace_back(hnsw.knn_search_old(query_node, k, ef_k));
+            delete query_node;
+            hnsw.log_progress(i + 1, query_load.size());
+        }
+        end = std::chrono::high_resolution_clock::now();
+        duration = duration_cast<std::chrono::milliseconds>(end - start);
+        old_query_time = (float) duration.count();
+        old_query_count = hnsw.get_distance_calculation_count();
+        std::cout << "total time for query: " << old_query_time / 1000 << std::endl;
+        std::cout << "total distance count for query: " << old_query_count << std::endl;
+
+        // old search layer: calculate recall
+        std::vector<float> total_recall;
+        for (int i = 0; i < query_load.size(); i++) {
+            if (groundtruth_load.size() != 0) {
+                total_recall.emplace_back(calculate_recall(old_query_result[i], base_load, groundtruth_load[i], k));
+            } else {
+                total_recall.emplace_back(
+                        calculate_recall(old_query_result[i], hnsw.knn_search_brute_force(query_load[i], base_load, k)));
+            }
+        }
+        old_avg_recall = std::accumulate(total_recall.begin(), total_recall.end(), 0.0) / total_recall.size();
+        std::cout << "recall: " << old_avg_recall << std::endl;
+        hnsw.edge_map.clear();
+    }
+
+    // new search layer (random next): query
+    {
+        std::cout << std::endl << "new serach layer(random next): querying query vectors..." << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        hnsw.set_distance_calculation_count(0);
+        std::vector<std::vector<std::vector<float> > > new_random_query_result;
+        for (size_t i = 0; i < query_load.size(); i++) {
+            Node *query_node = new Node(query_load[i], std::vector<std::vector<Node *> >());
+            new_random_query_result.emplace_back(hnsw.knn_search_new(query_node, k, ef_k));
+            delete query_node;
+            hnsw.log_progress(i + 1, query_load.size());
+        }
+        end = std::chrono::high_resolution_clock::now();
+        duration = duration_cast<std::chrono::milliseconds>(end - start);
+        new_random_query_time = (float) duration.count();
+        new_random_query_count = hnsw.get_distance_calculation_count();
+        std::cout << "total time for query: " << new_random_query_time / 1000 << std::endl;
+        std::cout << "total distance count for query: " << new_random_query_count << std::endl;
+
+        // new search layer (random next): calculate recall
+        std::vector<float> new_random_total_recall;
+        for (int i = 0; i < query_load.size(); i++) {
+            if (groundtruth_load.size() != 0) {
+                new_random_total_recall.emplace_back(calculate_recall(new_random_query_result[i], base_load, groundtruth_load[i], k));
+            } else {
+                new_random_total_recall.emplace_back(
+                        calculate_recall(new_random_query_result[i], hnsw.knn_search_brute_force(query_load[i], base_load, k)));
+            }
+        }
+        new_random_avg_recall = std::accumulate(new_random_total_recall.begin(), new_random_total_recall.end(), 0.0) / new_random_total_recall.size();
+        std::cout << "recall: " << new_random_avg_recall << std::endl;
+        hnsw.edge_map.clear();
     }
 
 
-    // base
+    // learn frequency count with learn and base vectors
+    std::cout << "querying learn vectors..." << std::endl;
+    for (size_t i = 0; i < learn_load.size(); i++) {
+        Node *query_node = new Node(learn_load[i], std::vector<std::vector<Node *>>());
+        hnsw.knn_search_learn(query_node, k, ef_k);
+        delete query_node;
+        hnsw.log_progress(i + 1, learn_load.size());
+    }
     std::cout << "querying base vectors..." << std::endl;
     for (size_t i = 0; i < base_load.size(); i++) {
         Node *query_node = new Node(base_load[i], std::vector<std::vector<Node *>>());
-        hnsw.knn_search(query_node, k, ef_k);
+        hnsw.knn_search_learn(query_node, k, ef_k);
         delete query_node;
         hnsw.log_progress(i + 1, base_load.size());
     }
@@ -628,31 +714,45 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
         i.first->next = std::vector<int>(i.first->neighbors.size(), 0);
         for (int l = 0; l < i.first->neighbors.size(); l++) {
             std::sort(i.first->neighbors[l].begin(), i.first->neighbors[l].end(),
-                    [&hnsw, &i, l](Node *a, Node *b) {
-                        return hnsw.edge_map[i.first][a][l] > hnsw.edge_map[i.first][b][l];
-                    });
+                      [&hnsw, &i, l](Node *a, Node *b) {
+                          return hnsw.edge_map[i.first][a][l] > hnsw.edge_map[i.first][b][l];
+                      });
         }
     }
 
-    // query
-    std::cout << "querying query vectors..." << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    hnsw.set_distance_calculation_count(0);
-    std::vector<std::vector<std::vector<float> > > query_result;
-    for (size_t i = 0; i < query_load.size(); i++) {
-        Node *query_node = new Node(query_load[i], std::vector<std::vector<Node *> >());
-        query_result.emplace_back(hnsw.knn_search_new(query_node, k, ef_k));
-        delete query_node;
-        hnsw.log_progress(i + 1, query_load.size());
+    // new search layer: query
+    {
+        std::cout << "querying query vectors..." << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        hnsw.set_distance_calculation_count(0);
+        std::vector<std::vector<std::vector<float> > > new_query_result;
+        for (size_t i = 0; i < query_load.size(); i++) {
+            Node *query_node = new Node(query_load[i], std::vector<std::vector<Node *> >());
+            new_query_result.emplace_back(hnsw.knn_search_new(query_node, k, ef_k));
+            delete query_node;
+            hnsw.log_progress(i + 1, query_load.size());
+        }
+
+        end = std::chrono::high_resolution_clock::now();
+        duration = duration_cast<std::chrono::milliseconds>(end - start);
+        new_query_time = (float) duration.count();
+        new_query_count = hnsw.get_distance_calculation_count();
+        std::cout << "total time for query: " << new_query_time / 1000 << std::endl;
+        std::cout << "total distance count for query: " << new_query_count << std::endl;
+
+        // new search layer: calculate recall
+        std::vector<float> new_total_recall;
+        for (int i = 0; i < query_load.size(); i++) {
+            if (groundtruth_load.size() != 0) {
+                new_total_recall.emplace_back(calculate_recall(new_query_result[i], base_load, groundtruth_load[i], k));
+            } else {
+                new_total_recall.emplace_back(
+                        calculate_recall(new_query_result[i], hnsw.knn_search_brute_force(query_load[i], base_load, k)));
+            }
+        }
+        new_avg_recall = std::accumulate(new_total_recall.begin(), new_total_recall.end(), 0.0) / new_total_recall.size();
+        std::cout << "recall: " << new_avg_recall << std::endl;
     }
-
-    end = std::chrono::high_resolution_clock::now();
-    duration = duration_cast<std::chrono::milliseconds>(end - start);
-    float query_time = (float) duration.count();
-    auto query_count = hnsw.get_distance_calculation_count();
-    std::cout << "total time for query: " << query_time / 1000 << std::endl;
-    std::cout << "total distance count for query: " << query_count << std::endl;
-
     // frequency distribution
     // std::map<int, int> freq_dist;
     // for (int l = 0; l < hnsw.enter_point->neighbors.size(); l++) {
@@ -676,32 +776,19 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     //     std::cout << i.first << ": " << i.second << std::endl;
     // }
 
-    // calculate recall
-    std::vector<float> total_recall;
-    for (int i = 0; i < query_load.size(); i++) {
-        if (groundtruth_load.size() != 0) {
-            total_recall.emplace_back(calculate_recall(query_result[i], base_load, groundtruth_load[i]));
-        } else {
-            total_recall.emplace_back(
-                    calculate_recall(query_result[i], hnsw.knn_search_brute_force(query_load[i], base_load, 100)));
-        }
-    }
-    float avg_recall = std::accumulate(total_recall.begin(), total_recall.end(), 0.0) / total_recall.size();
-    std::cout << "recall: " << avg_recall << std::endl;
-
     // write to csv file
     auto p = hnsw.get_graph_parameters();
     int m, m_max, m_max_0, ef_construction;
     float ml;
     std::string select_neighbors_mode;
     std::tie(m, m_max, m_max_0, ef_construction, ml, select_neighbors_mode) = p;
-    file_name = "./result/hnsw_" + std::to_string(m) + "_" + std::to_string(m_max) + "_" + std::to_string(m_max_0) +
-                "_" + std::to_string(ef_construction) + "_" + std::to_string(ml) + "_" + select_neighbors_mode +
-                "_" + std::to_string(k) + "_" + std::to_string(ef_k) + ".csv";
     std::fstream file(file_name, std::ios_base::app);
     file << m << "," << m_max << "," << m_max_0 << "," << ef_construction << "," << ml << ","
          << select_neighbors_mode << ","
-         << build_time << "," << query_time << "," << build_count << "," << query_count << "," << avg_recall << ","
+         << build_time << "," << build_count << ","
+         << old_query_time << "," << old_query_count << "," << old_avg_recall << ","
+         << new_random_query_time << "," << new_random_query_count << "," << new_random_avg_recall << ","
+         << new_query_time << "," << new_query_count << "," << new_avg_recall << ","
          << k << "," << ef_k << "\n";
     file.close();
 }
@@ -716,15 +803,15 @@ int main(int argc, char **argv) {
     std::vector<std::vector<float> > groundtruth_load;
     unsigned dim1, dim2, dim3, dim4;
     unsigned num1, num2, num3, num4;
-    // load_fvecs_data("sift/sift_base.fvecs", base_load, num1, dim1);
-    // load_fvecs_data("sift/sift_learn.fvecs", learn_load, num2, dim2);
-    // load_fvecs_data("sift/sift_query.fvecs", query_load, num3, dim3);
-    // load_ivecs_data("sift/sift_groundtruth.ivecs", groundtruth_load, num4, dim4);
+    load_fvecs_data("sift/sift_base.fvecs", base_load, num1, dim1);
+    load_fvecs_data("sift/sift_learn.fvecs", learn_load, num2, dim2);
+    load_fvecs_data("sift/sift_query.fvecs", query_load, num3, dim3);
+    load_ivecs_data("sift/sift_groundtruth.ivecs", groundtruth_load, num4, dim4);
 //
-    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.base.txt", base_load, num1, dim1);
-    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.query.txt", query_load, num2, dim2);
-    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.learn.txt", learn_load, num3, dim3);
-    load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.groundtruth.txt", groundtruth_load, num4, dim4);
+    // load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.base.txt", base_load, num1, dim1);
+    // load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.query.txt", query_load, num2, dim2);
+    // load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.learn.txt", learn_load, num3, dim3);
+    // load_txt_data("glove.twitter.27B.25d/glove.twitter.27B.25d.groundtruth.txt", groundtruth_load, num4, dim4);
 
     std::cout << "base_num：" << num1 << std::endl
               << "base dimension：" << dim1 << std::endl;
@@ -736,11 +823,14 @@ int main(int argc, char **argv) {
               << "groundtruth dimension：" << dim4 << std::endl;
 
     // prepare csv file to write
-    std::string file_name = "test.csv";
+    std::string file_name = "sift_new_algo.csv";
     std::fstream output_file(file_name, std::ios_base::app);
     output_file << "m,m_max,m_max_0,ef_construction,ml,select_neighbor_mode,"
-                << "total_time_for_building_graph,total_time_for_query,total_distance_count_for_building_graph,total_distance_count_for_query,"
-                << "recall,k,ef_k\n";
+                << "build_time,build_dist_count,"
+                << "old_query_time,old_query_dist_count,old_recall,"
+                << "new_random_query_time,new_random_query_dist_count,new_random_recall,"
+                << "new_query_time,new_query_dist_count,new_recall,"
+                << "k,ef_k\n";
     output_file.close();
 
     // for (std::string select_neighbors_mode: {"simple", "heuristic"}) {
@@ -755,8 +845,25 @@ int main(int argc, char **argv) {
     //         }
     //     }
     // }
-    HNSW hnsw = HNSW(16, 16, 32, 32, 1.0, "simple");
-    build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 5000);
+
+
+
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 100);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 300);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 500);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 1000);
+    }
 
     return 0;
 }
