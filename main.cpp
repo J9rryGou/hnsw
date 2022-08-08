@@ -13,9 +13,11 @@
 #include <map>
 #include <string>
 #include <sstream>
+#include <unordered_map>
+#include <random>
 
-using namespace std;
-using namespace chrono;
+std::mt19937 rng;
+std::uniform_real_distribution<float> unif_0_1(0.000001, 0.999999);
 
 float calculate_recall(const std::vector<std::vector<float> > &sample, const std::vector<std::vector<float> > &base) {
     struct hashFunction {
@@ -47,7 +49,7 @@ float calculate_recall(const std::vector<std::vector<float> > &sample, const std
 
 float
 calculate_recall(const std::vector<std::vector<float> > &sample, const std::vector<std::vector<float> > &base_load,
-                 const vector<float> &index, int k) {
+                 const std::vector<float> &index, int k) {
     std::vector<std::vector<float> > base;
     for (int i = 0; i < k; i++) {
         base.push_back(base_load[index[i]]);
@@ -98,10 +100,10 @@ private:
 
 public:
     Node *enter_point = nullptr;
-    std::map<Node *, std::map<Node *, std::map<int, int> > > edge_map;
+    std::unordered_map<Node *, std::unordered_map<Node *, std::unordered_map<int, int> > > edge_map;
+    std::vector<Node *> nodes;
 
     HNSW(int m, int m_max, int m_max_0, int ef_construction, float ml, const std::string &select_neighbors_mode) {
-        srand(42);
         this->m = m;
         this->m_max = m_max;
         this->m_max_0 = m_max_0;
@@ -164,6 +166,7 @@ public:
 
         for (int i = 0; i < input.size(); i++) {
             Node *node = new Node(input[i], std::vector<std::vector<Node *> >());
+            this->nodes.push_back(node);
 
             // special case: the first node has no enter point to insert
             if (enter_point == nullptr) {
@@ -181,7 +184,7 @@ public:
         std::priority_queue<std::pair<float, Node *> > w;
         Node *ep = this->enter_point;
         int l = ep->neighbors.size() - 1;
-        int l_new = floor(-log((float) rand() / (RAND_MAX + 1.0)) * ml);
+        int l_new = floor(-log(unif_0_1(rng)) * ml);
 
         // update fields of node to level l_new
         q->neighbors.resize(l_new + 1);
@@ -296,26 +299,46 @@ public:
                 break;
             }
 
-            if (c->next[lc] >= c->neighbors[lc].size()) {
-                candidates.pop();
-            } else {
-                Node *e = c->neighbors[lc][c->next[lc]];
-                c->next[lc]++;
-                if (v.find(e) == v.end()) {
-                    v.emplace(e);
-                    e->parent = c; // record parent
-                    f = w.top().second;
-                    float distance_e_q = dist_l2(&(e->data), &(q->data));
-                    if (distance_e_q < f_dist || w.size() < ef) {
-                        e->next[lc] = 0;
-                        candidates.emplace(-distance_e_q, e);
-                        w.emplace(distance_e_q, e);
-                        if (w.size() > ef) {
-                            w.pop();
+            // if (w.size() <= ef) {
+                if (c->next[lc] >= c->neighbors[lc].size()) {
+                    candidates.pop();
+                } else {
+                    Node *e = c->neighbors[lc][c->next[lc]];
+                    c->next[lc]++;
+                    if (v.find(e) == v.end()) {
+                        v.emplace(e);
+                        e->parent = c; // record parent
+                        f = w.top().second;
+                        float distance_e_q = dist_l2(&(e->data), &(q->data));
+                        if (distance_e_q < f_dist || w.size() < ef) {
+                            e->next[lc] = 0;
+                            candidates.emplace(-distance_e_q, e);
+                            w.emplace(distance_e_q, e);
+                            if (w.size() > ef) {
+                                w.pop();
+                            }
                         }
                     }
                 }
-            }
+            // } else {
+            //     for (Node *e: c->neighbors[lc]) {
+            //         if (v.find(e) == v.end()) {
+            //             v.emplace(e);
+            //             // record parent
+            //             e->parent = c;
+            //             f = w.top().second;
+            //             float distance_e_q = dist_l2(&(e->data), &(q->data));
+            //             if (distance_e_q < f_dist || w.size() < ef) {
+            //                 candidates.emplace(-distance_e_q, e);
+            //                 w.emplace(distance_e_q, e);
+            //                 if (w.size() > ef) {
+            //                     w.pop();
+            //                 }
+            //             }
+            //         }
+            //     }
+
+            // }
         }
         std::priority_queue<std::pair<float, Node *> > min_w;
         while (!w.empty()) {
@@ -575,7 +598,7 @@ void load_txt_data(const char* filename, std::vector<std::vector<float> > &resul
     }
     std::string temp;
     while (getline(fd, temp)) {
-        vector<float> f;
+        std::vector<float> f;
         // split the line by space
         std::istringstream iss(temp);
         std::string token;
@@ -614,7 +637,7 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     // old search layer: query
     {
         std::cout << std::endl << "old serach layer: querying query vectors..." << std::endl;
-        start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::high_resolution_clock::now();
         hnsw.set_distance_calculation_count(0);
         std::vector<std::vector<std::vector<float> > > old_query_result;
         for (size_t i = 0; i < query_load.size(); i++) {
@@ -623,8 +646,8 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
             delete query_node;
             hnsw.log_progress(i + 1, query_load.size());
         }
-        end = std::chrono::high_resolution_clock::now();
-        duration = duration_cast<std::chrono::milliseconds>(end - start);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = duration_cast<std::chrono::milliseconds>(end - start);
         old_query_time = (float) duration.count();
         old_query_count = hnsw.get_distance_calculation_count();
         std::cout << "total time for query: " << old_query_time / 1000 << std::endl;
@@ -648,7 +671,7 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     // new search layer (random next): query
     {
         std::cout << std::endl << "new serach layer(random next): querying query vectors..." << std::endl;
-        start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::high_resolution_clock::now();
         hnsw.set_distance_calculation_count(0);
         std::vector<std::vector<std::vector<float> > > new_random_query_result;
         for (size_t i = 0; i < query_load.size(); i++) {
@@ -657,8 +680,8 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
             delete query_node;
             hnsw.log_progress(i + 1, query_load.size());
         }
-        end = std::chrono::high_resolution_clock::now();
-        duration = duration_cast<std::chrono::milliseconds>(end - start);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = duration_cast<std::chrono::milliseconds>(end - start);
         new_random_query_time = (float) duration.count();
         new_random_query_count = hnsw.get_distance_calculation_count();
         std::cout << "total time for query: " << new_random_query_time / 1000 << std::endl;
@@ -707,6 +730,18 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
 //            }
 //        }
 //    }
+    for (Node *n :hnsw.nodes) {
+        for (int l = 0; l < n->neighbors.size(); l++) {
+            std::vector<Node *> new_neighbors;
+            for (Node *m : n->neighbors[l]) {
+                if (hnsw.edge_map[n][m][l] != 0) {
+                    new_neighbors.push_back(m);
+                }
+            }
+            n->neighbors[l] = new_neighbors;
+        }
+
+    }
 
     // sort all node neighbors by frequency count in edge_map
     std::cout << "sorting neighbors..." << std::endl;
@@ -714,16 +749,16 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
         i.first->next = std::vector<int>(i.first->neighbors.size(), 0);
         for (int l = 0; l < i.first->neighbors.size(); l++) {
             std::sort(i.first->neighbors[l].begin(), i.first->neighbors[l].end(),
-                      [&hnsw, &i, l](Node *a, Node *b) {
-                          return hnsw.edge_map[i.first][a][l] > hnsw.edge_map[i.first][b][l];
-                      });
+                    [&hnsw, &i, l](Node *a, Node *b) {
+                        return hnsw.edge_map[i.first][a][l] > hnsw.edge_map[i.first][b][l];
+                    });
         }
     }
 
     // new search layer: query
     {
         std::cout << "querying query vectors..." << std::endl;
-        start = std::chrono::high_resolution_clock::now();
+        auto start = std::chrono::high_resolution_clock::now();
         hnsw.set_distance_calculation_count(0);
         std::vector<std::vector<std::vector<float> > > new_query_result;
         for (size_t i = 0; i < query_load.size(); i++) {
@@ -733,8 +768,8 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
             hnsw.log_progress(i + 1, query_load.size());
         }
 
-        end = std::chrono::high_resolution_clock::now();
-        duration = duration_cast<std::chrono::milliseconds>(end - start);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = duration_cast<std::chrono::milliseconds>(end - start);
         new_query_time = (float) duration.count();
         new_query_count = hnsw.get_distance_calculation_count();
         std::cout << "total time for query: " << new_query_time / 1000 << std::endl;
@@ -758,22 +793,27 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
     // for (int l = 0; l < hnsw.enter_point->neighbors.size(); l++) {
     //     std::cout << "level " << l << std::endl;
     //     int count = 0;
-    //     for (Node *a : hnsw.edge_map.key_comp) {
-    //         std::cout << "node " << a << ": ";
-    //         std::cout <<hnsw.edge_map[a][a][l] << " | ";
-    //         count += hnsw.edge_map[a][a][l];
-    //         for (Node *b: a->neighbors[l]) {
-    //             freq_dist[hnsw.edge_map[a][b][l]]++;
-    //             std::cout << hnsw.edge_map[a][b][l] << " ";
-    //             count += hnsw.edge_map[a][b][l];
+    //     for (Node *a : hnsw.nodes) {
+    //         if (a->neighbors.size() - 1 >= l) {
+    //             std::cout << "node " << a << ": ";
+    //             std::cout << a->neighbors[l].size() << "    ";
+    //             std::cout <<hnsw.edge_map[a][a][l] << " | ";
+    //             count += hnsw.edge_map[a][a][l];
+    //             for (Node *b: a->neighbors[l]) {
+    //                 freq_dist[hnsw.edge_map[a][b][l]]++;
+    //                 std::cout << hnsw.edge_map[a][b][l] << " ";
+    //                 count += hnsw.edge_map[a][b][l];
+    //             }
+    //             std::cout << std::endl;
     //         }
-    //         std::cout << std::endl;
     //     }
     //     std::cout << "level " << l << " total count: " << count << std::endl << std::endl;
     // }
     // std::cout << "frequency distribution: " << std::endl;
+    // std::fstream freq_dist_file;
+    // freq_dist_file.open("freq_dist.txt", std::ios::out);
     // for (const auto &i: freq_dist) {
-    //     std::cout << i.first << ": " << i.second << std::endl;
+    //     freq_dist_file << i.first << "," << i.second << std::endl;
     // }
 
     // write to csv file
@@ -795,7 +835,7 @@ build_graph_and_query(const std::vector<std::vector<float> > &base_load,
 
 
 int main(int argc, char **argv) {
-    srand(42);
+    rng.seed(42);
     // load dataset
     std::vector<std::vector<float> > base_load;
     std::vector<std::vector<float> > query_load;
@@ -823,7 +863,7 @@ int main(int argc, char **argv) {
               << "groundtruth dimension：" << dim4 << std::endl;
 
     // prepare csv file to write
-    std::string file_name = "sift_new_algo.csv";
+    std::string file_name = "testglove.csv";
     std::fstream output_file(file_name, std::ios_base::app);
     output_file << "m,m_max,m_max_0,ef_construction,ml,select_neighbor_mode,"
                 << "build_time,build_dist_count,"
@@ -850,19 +890,44 @@ int main(int argc, char **argv) {
 
     {
         HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 10);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 30);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 50);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 80);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 100);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 300);
+    }
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 10, 500);
+    }
+
+    {
+        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
         build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 100);
     }
     {
         HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
-        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 300);
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 200);
     }
     {
         HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
-        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 500);
-    }
-    {
-        HNSW hnsw = HNSW(16, 16, 32, 100, 1, "simple");
-        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 1000);
+        build_graph_and_query(base_load, learn_load, query_load, groundtruth_load, file_name, hnsw, 100, 400);
     }
 
     return 0;
